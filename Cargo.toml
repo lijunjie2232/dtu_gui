@@ -1,0 +1,14 @@
+[package]
+name = "dtu_gui"
+version = "0.1.0"
+edition = "2021"
+description = "dtu desktop client: a native egui window over dtu_core"
+
+[[bin]]
+name = "dtu-gui"
+path = "src/main.rs"
+
+[dependencies]
+dtu_core = { path = "../dtu_core" }
+tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
+eframe = "0.29"
