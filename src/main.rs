@@ -111,3 +111,33 @@ async fn act(st: &Arc<State>, cmd: Cmd) -> Result<String, String> {
     }
 }
 
+/// Own thread, republishing a fresh `View` every second: the window never awaits.
+fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>) -> Sender<Cmd> {
+    let (tx, rx) = channel::<Cmd>();
+    std::thread::spawn(move || {
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                view.lock().unwrap().note = format!("runtime: {e}");
+                return;
+            }
+        };
+        loop {
+            let cmd = match rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(cmd) => cmd,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Cmd::Refresh,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            };
+            let note = rt.block_on(act(&st, cmd));
+            let mut fresh = rt.block_on(snapshot(&st));
+            match note {
+                Ok(msg) if !msg.is_empty() => fresh.note = msg,
+                Ok(_) => {}
+                Err(e) => fresh.note = e,
+            }
+            *view.lock().unwrap() = fresh;
+        }
+    });
+    tx
+}
+
