@@ -238,3 +238,62 @@ impl eframe::App for App {
     }
 }
 
+impl App {
+    /// Edits land in the live store, so the running listener sees them immediately.
+    fn forget(&mut self, id: &str) {
+        let st = self.state.clone();
+        let view = self.view.clone();
+        let id = id.to_string();
+        std::thread::spawn(move || {
+            let mut store = st.trust.blocking_lock();
+            let note = if store.remove(&id) {
+                store.save().map(|_| format!("forgot {id}")).unwrap_or_else(|e| e)
+            } else {
+                format!("no such device: {id}")
+            };
+            view.lock().unwrap().note = note;
+        });
+    }
+
+    fn rename(&mut self, id: &str, alias: &str) {
+        let st = self.state.clone();
+        let view = self.view.clone();
+        let (id, alias) = (id.to_string(), alias.to_string());
+        std::thread::spawn(move || {
+            let mut store = st.trust.blocking_lock();
+            let note = match store.set_alias(&id, Some(&alias)).and_then(|_| store.save()) {
+                Ok(()) => format!("{id} is now {alias}"),
+                Err(e) => e,
+            };
+            view.lock().unwrap().note = note;
+        });
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    // This process is the app *and* the server.
+    let daemon = match embed::host(cfg::Config::load()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("dtu: {e}");
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = daemon.wait_ready() {
+        eprintln!("dtu: {e}");
+        daemon.stop();
+        std::process::exit(1);
+    }
+
+    let view = Arc::new(Mutex::new(View::default()));
+    let tx = spawn_worker(daemon.state.clone(), view.clone());
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default().with_inner_size([880.0, 600.0]),
+        ..Default::default()
+    };
+    let app = App { state: daemon.state.clone(), view, tx, tab: 0, alias: String::new() };
+    let out = eframe::run_native("dtu", options, Box::new(move |_cc| Ok(Box::new(app))));
+    // Closing the window stops the services this process was hosting.
+    daemon.stop();
+    out
+}
