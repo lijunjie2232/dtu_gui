@@ -141,3 +141,100 @@ fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>) -> Sender<Cmd> {
     tx
 }
 
+struct App {
+    state: Arc<State>,
+    view: Arc<Mutex<View>>,
+    tx: Sender<Cmd>,
+    tab: usize,
+    alias: String,
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(Duration::from_secs(1));
+        let view = self.view.lock().expect("view lock").clone();
+
+        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                for (i, name) in TABS.iter().enumerate() {
+                    if ui.selectable_label(self.tab == i, *name).clicked() {
+                        self.tab = i;
+                    }
+                }
+                ui.separator();
+                if ui.button("Scan LAN").clicked() {
+                    let _ = self.tx.send(Cmd::Scan);
+                }
+                if ui.button("Refresh").clicked() {
+                    let _ = self.tx.send(Cmd::Refresh);
+                }
+            });
+        });
+
+        egui::TopBottomPanel::bottom("note").show(ctx, |ui| {
+            ui.label(if view.note.is_empty() { "ready" } else { view.note.as_str() });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
+            0 => {
+                egui::Grid::new("status").num_columns(2).striped(true).show(ui, |ui| {
+                    for (key, value) in &view.status {
+                        ui.label(key);
+                        ui.label(value);
+                        ui.end_row();
+                    }
+                });
+            }
+            1 => {
+                let mut forget = None;
+                for line in &view.devices {
+                    ui.horizontal(|ui| {
+                        ui.label(line);
+                        if ui.small_button("forget").clicked() {
+                            forget = Some(line.split_whitespace().next().unwrap_or_default().to_string());
+                        }
+                    });
+                }
+                if let Some(id) = forget {
+                    self.forget(&id);
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.label("alias:");
+                    ui.text_edit_singleline(&mut self.alias);
+                    if ui.button("rename first device").clicked() {
+                        let alias = self.alias.clone();
+                        if let Some(id) = view.devices.first().and_then(|l| l.split_whitespace().next()) {
+                            self.rename(id, &alias);
+                        }
+                    }
+                });
+            }
+            2 => {
+                if view.invites.is_empty() {
+                    ui.label("no pending invitations");
+                }
+                for inv in &view.invites {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} from {} at {}", inv.id, inv.from, inv.addr));
+                        if ui.button("accept").clicked() {
+                            let _ = self.tx.send(Cmd::Accept(inv.id.clone()));
+                        }
+                        if ui.button("deny").clicked() {
+                            let _ = self.tx.send(Cmd::Deny(inv.id.clone()));
+                        }
+                    });
+                }
+            }
+            _ => {
+                for line in &view.code {
+                    ui.label(line);
+                }
+                if ui.button("new code").clicked() {
+                    let _ = self.tx.send(Cmd::NewCode);
+                }
+            }
+        });
+    }
+}
+
