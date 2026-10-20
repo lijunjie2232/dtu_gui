@@ -92,22 +92,14 @@ async fn act(st: &Arc<State>, cmd: Cmd) -> Result<String, String> {
         Cmd::Scan => {
             let trust = st.trust.lock().await.clone();
             let items = discover::scan(st.cfg.port, 1500, &st.id.id, &trust).await;
+            if items.is_empty() {
+                return Ok("no device answered the LAN probe".into());
+            }
             let found: Vec<String> = items
                 .iter()
-                .map(|s| {
-                    format!(
-                        "{} {}{}",
-                        s.id,
-                        s.addr,
-                        if s.trusted { " trusted" } else { "" }
-                    )
-                })
+                .map(|s| format!("{}{}", s.id, if s.trusted { " (trusted)" } else { "" }))
                 .collect();
-            Ok(if found.is_empty() {
-                "no device answered".to_string()
-            } else {
-                found.join(", ")
-            })
+            Ok(format!("{} device(s): {}", found.len(), found.join(", ")))
         }
         Cmd::NewCode => {
             st.rotate_code(None).await;
@@ -130,7 +122,10 @@ async fn act(st: &Arc<State>, cmd: Cmd) -> Result<String, String> {
 fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>) -> Sender<Cmd> {
     let (tx, rx) = channel::<Cmd>();
     std::thread::spawn(move || {
-        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
             Ok(rt) => rt,
             Err(e) => {
                 view.lock().unwrap().note = format!("runtime: {e}");
