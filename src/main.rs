@@ -485,12 +485,24 @@ impl App {
         let (id, alias) = (id.to_string(), alias.to_string());
         std::thread::spawn(move || {
             let mut store = st.trust.blocking_lock();
-            let note = match store.set_alias(&id, Some(&alias)).and_then(|_| store.save()) {
+            let note = match store
+                .set_alias(&id, Some(&alias))
+                .and_then(|_| store.save())
+            {
                 Ok(()) => format!("{id} is now {alias}"),
                 Err(e) => e,
             };
             view.lock().unwrap().note = note;
         });
+    }
+}
+
+/// Device ids are long; the status bar only needs enough to tell them apart.
+fn short_id(id: &str) -> String {
+    if id.len() <= 12 {
+        id.to_string()
+    } else {
+        format!("{}…", &id[..12])
     }
 }
 
