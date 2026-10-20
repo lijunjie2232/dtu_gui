@@ -156,6 +156,8 @@ struct App {
     view: Arc<Mutex<View>>,
     tx: Sender<Cmd>,
     tab: usize,
+    /// Device row picked on the Devices tab; its alias is edited next to the table.
+    selected: Option<String>,
     alias: String,
 }
 
@@ -163,101 +165,313 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_secs(1));
         let view = self.view.lock().expect("view lock").clone();
+        let api = dtu_core::api::api_port(&self.state);
 
-        egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
+        egui::TopBottomPanel::top("bar").show(ctx, |ui| {
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
+                ui.label(RichText::new("dtu").size(20.0).strong().color(ACCENT));
+                ui.add_space(8.0);
+                ui.separator();
                 for (i, name) in TABS.iter().enumerate() {
                     if ui.selectable_label(self.tab == i, *name).clicked() {
                         self.tab = i;
                     }
                 }
-                ui.separator();
-                if ui.button("Scan LAN").clicked() {
-                    let _ = self.tx.send(Cmd::Scan);
-                }
-                if ui.button("Refresh").clicked() {
-                    let _ = self.tx.send(Cmd::Refresh);
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.button("Refresh").clicked() {
+                        let _ = self.tx.send(Cmd::Refresh);
+                    }
+                    if ui.button("Scan LAN").clicked() {
+                        let _ = self.tx.send(Cmd::Scan);
+                    }
+                    if !view.invites.is_empty() {
+                        ui.label(
+                            RichText::new(format!("{} pending", view.invites.len())).color(WARN),
+                        );
+                    }
+                });
             });
+            ui.add_space(6.0);
         });
 
-        egui::TopBottomPanel::bottom("note").show(ctx, |ui| {
-            ui.label(if view.note.is_empty() { "ready" } else { view.note.as_str() });
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.add_space(2.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(short_id(&self.state.id.id))
+                        .monospace()
+                        .color(QUIET),
+                );
+                ui.label(RichText::new("·").color(QUIET));
+                ui.label(RichText::new(format!("listen {}", self.state.cfg.port)).color(QUIET));
+                ui.label(RichText::new("·").color(QUIET));
+                ui.label(RichText::new(format!("api 127.0.0.1:{api}")).color(QUIET));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if view.note.is_empty() {
+                        ui.label(RichText::new("ready").color(QUIET));
+                    } else {
+                        ui.label(view.note.as_str());
+                    }
+                });
+            });
+            ui.add_space(2.0);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| match self.tab {
-            0 => {
-                egui::Grid::new("status").num_columns(2).striped(true).show(ui, |ui| {
-                    for (key, value) in &view.status {
-                        ui.label(key);
-                        ui.label(value);
-                        ui.end_row();
-                    }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.add_space(4.0);
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
+                .show(ui, |ui| match self.tab {
+                    0 => self.status_tab(ui, &view, api),
+                    1 => self.devices_tab(ui, &view),
+                    2 => self.invites_tab(ui, &view),
+                    _ => self.code_tab(ui, &view),
                 });
-            }
-            1 => {
-                let mut forget = None;
-                for line in &view.devices {
-                    ui.horizontal(|ui| {
-                        ui.label(line);
-                        if ui.small_button("forget").clicked() {
-                            forget = Some(line.split_whitespace().next().unwrap_or_default().to_string());
-                        }
-                    });
-                }
-                if let Some(id) = forget {
-                    self.forget(&id);
-                }
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label("alias:");
-                    ui.text_edit_singleline(&mut self.alias);
-                    if ui.button("rename first device").clicked() {
-                        let alias = self.alias.clone();
-                        if let Some(id) = view.devices.first().and_then(|l| l.split_whitespace().next()) {
-                            self.rename(id, &alias);
-                        }
-                    }
-                });
-            }
-            2 => {
-                if view.invites.is_empty() {
-                    ui.label("no pending invitations");
-                }
-                for inv in &view.invites {
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} from {} at {}", inv.id, inv.from, inv.addr));
-                        if ui.button("accept").clicked() {
-                            let _ = self.tx.send(Cmd::Accept(inv.id.clone()));
-                        }
-                        if ui.button("deny").clicked() {
-                            let _ = self.tx.send(Cmd::Deny(inv.id.clone()));
-                        }
-                    });
-                }
-            }
-            _ => {
-                for line in &view.code {
-                    ui.label(line);
-                }
-                if ui.button("new code").clicked() {
-                    let _ = self.tx.send(Cmd::NewCode);
-                }
-            }
         });
     }
 }
 
 impl App {
+    fn status_tab(&mut self, ui: &mut egui::Ui, view: &View, api: u16) {
+        ui.columns(2, |cols| {
+            cols[0].label(RichText::new("This device").strong().size(15.0));
+            cols[0].add_space(6.0);
+            Grid::new("status")
+                .num_columns(2)
+                .striped(true)
+                .spacing([18.0, 7.0])
+                .show(&mut cols[0], |ui| {
+                    for (key, value) in &view.status {
+                        ui.label(RichText::new(key).color(QUIET));
+                        ui.label(value);
+                        ui.end_row();
+                    }
+                });
+
+            let col = &mut cols[1];
+            col.label(RichText::new("Third-party API").strong().size(15.0));
+            col.add_space(6.0);
+            col.label(RichText::new("Loopback REST for any frontend.").color(QUIET));
+            col.add_space(6.0);
+            col.horizontal(|ui| {
+                ui.monospace(format!("http://127.0.0.1:{api}"));
+                if ui.button("copy key").clicked() {
+                    let key = std::fs::read_to_string(cfg::file("control.token"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    ui.output_mut(|o| o.copied_text = key);
+                }
+            });
+            col.add_space(14.0);
+            col.label(RichText::new("Endpoints").strong());
+            for (route, what) in [
+                ("GET  /api/status", "device, ports, counters"),
+                ("GET  /api/devices", "trusted devices"),
+                ("GET  /api/invites", "pending invitations"),
+                ("POST /api/transfer", "push / pull / diff / sync"),
+                ("GET  /api/transfer/<id>", "transfer progress"),
+            ] {
+                col.horizontal(|ui| {
+                    ui.monospace(route);
+                    ui.label(RichText::new(what).color(QUIET).small());
+                });
+            }
+        });
+    }
+
+    fn devices_tab(&mut self, ui: &mut egui::Ui, view: &View) {
+        if view.devices.is_empty() {
+            // sit the text a third of the way down instead of at the very top
+            ui.add_space((ui.available_height() * 0.3).min(180.0));
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("No trusted devices yet").strong().size(16.0));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "Pair one from the Invitations tab, or run `dtu device add <host:port>` \
+                         on this machine.",
+                    )
+                    .color(QUIET),
+                );
+            });
+            return;
+        }
+
+        Grid::new("devices")
+            .num_columns(5)
+            .striped(true)
+            .spacing([16.0, 7.0])
+            .show(ui, |ui| {
+                for h in ["device", "alias", "address", "expires", ""] {
+                    ui.label(RichText::new(h).color(QUIET).strong());
+                }
+                ui.end_row();
+
+                for row in &view.devices {
+                    let picked = self.selected.as_deref() == Some(row.id.as_str());
+                    if ui
+                        .selectable_label(picked, RichText::new(&row.id).monospace())
+                        .on_hover_text("click to select")
+                        .clicked()
+                    {
+                        self.selected = Some(row.id.clone());
+                        self.alias = row.alias.clone().unwrap_or_default();
+                    }
+                    ui.label(row.alias.as_deref().unwrap_or("—"));
+                    ui.label(RichText::new(row.addr.as_deref().unwrap_or("—")).monospace());
+                    if !row.live {
+                        ui.label(RichText::new("expired").color(WARN));
+                    } else if row.expires_at == 0 {
+                        ui.label("never");
+                    } else {
+                        ui.label(dtu_core::audit::iso(row.expires_at));
+                    }
+                    if ui.small_button("forget").clicked() {
+                        self.forget(&row.id);
+                    }
+                    ui.end_row();
+                }
+            });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.horizontal(|ui| match self.selected.clone() {
+            None => {
+                ui.label(RichText::new("Select a device to rename or forget it.").color(QUIET));
+            }
+            Some(id) => {
+                ui.label(RichText::new(short_id(&id)).monospace());
+                ui.label(RichText::new("alias").color(QUIET));
+                let edit = ui.add(TextEdit::singleline(&mut self.alias).desired_width(180.0));
+                let save = ui.button("save").clicked()
+                    || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                if save {
+                    self.rename(&id, &self.alias.clone());
+                }
+                if ui.button("forget").clicked() {
+                    self.forget(&id);
+                }
+                if ui.button("clear").clicked() {
+                    self.selected = None;
+                    self.alias.clear();
+                }
+            }
+        });
+    }
+
+    fn invites_tab(&mut self, ui: &mut egui::Ui, view: &View) {
+        if view.invites.is_empty() {
+            // sit the text a third of the way down instead of at the very top
+            ui.add_space((ui.available_height() * 0.3).min(180.0));
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new("No pending invitations").strong().size(16.0));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "An invitation arrives when another device wants to trust this one. \
+                         It waits here until accepted or denied.",
+                    )
+                    .color(QUIET),
+                );
+            });
+            return;
+        }
+
+        ScrollArea::vertical().show(ui, |ui| {
+            for inv in &view.invites {
+                egui::Frame::group(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&inv.id).monospace().strong().size(15.0));
+                        ui.label(format!("from {}", inv.from));
+                        ui.label(RichText::new(&inv.addr).monospace().color(QUIET));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.button("deny").clicked() {
+                                let _ = self.tx.send(Cmd::Deny(inv.id.clone()));
+                            }
+                            if ui.button("accept 30d").clicked() {
+                                let _ = self.tx.send(Cmd::Accept(inv.id.clone()));
+                            }
+                        });
+                    });
+                    ui.label(
+                        RichText::new(format!(
+                            "requested expiry {}",
+                            if inv.expires_at == 0 {
+                                "never".to_string()
+                            } else {
+                                dtu_core::audit::iso(inv.expires_at)
+                            }
+                        ))
+                        .color(QUIET)
+                        .small(),
+                    );
+                });
+                ui.add_space(4.0);
+            }
+        });
+    }
+
+    fn code_tab(&mut self, ui: &mut egui::Ui, view: &View) {
+        ui.label(RichText::new("One-time pairing code").strong().size(15.0));
+        ui.add_space(8.0);
+        egui::Frame::group(ui.style())
+            .inner_margin(egui::Margin::same(16.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&view.code)
+                            .monospace()
+                            .size(34.0)
+                            .strong()
+                            .color(ACCENT),
+                    );
+                    ui.add_space(16.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(6.0);
+                        if ui.button("new code").clicked() {
+                            let _ = self.tx.send(Cmd::NewCode);
+                        }
+                        if ui.button("copy").clicked() {
+                            ui.output_mut(|o| o.copied_text = view.code.clone());
+                        }
+                    });
+                });
+                if view.consumed {
+                    ui.label(RichText::new("used by one transfer — refresh to reuse").color(WARN));
+                }
+                if view.password {
+                    ui.label("a password is required on top of the code");
+                }
+            });
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new(
+                "Share it with the person sending files: they run \
+                 `dtu push <this host> <file> --code <code>` and pair once.",
+            )
+            .color(QUIET),
+        );
+    }
+
     /// Edits land in the live store, so the running listener sees them immediately.
     fn forget(&mut self, id: &str) {
         let st = self.state.clone();
         let view = self.view.clone();
         let id = id.to_string();
+        if self.selected.as_deref() == Some(id.as_str()) {
+            self.selected = None;
+        }
         std::thread::spawn(move || {
             let mut store = st.trust.blocking_lock();
             let note = if store.remove(&id) {
-                store.save().map(|_| format!("forgot {id}")).unwrap_or_else(|e| e)
+                store
+                    .save()
+                    .map(|_| format!("forgot {id}"))
+                    .unwrap_or_else(|e| e)
             } else {
                 format!("no such device: {id}")
             };
