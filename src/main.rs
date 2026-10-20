@@ -9,16 +9,31 @@ use dtu_core::proto::{self, InviteView};
 use dtu_core::state::{Decision, State};
 use dtu_core::trust::Store;
 use dtu_core::{cfg, discover, embed, guard, identity, invite};
-use eframe::egui;
+use eframe::egui::{self, Align, Color32, Grid, Layout, RichText, ScrollArea, TextEdit};
 
-const TABS: [&str; 4] = ["Status", "Devices", "Invitations", "Pairing code"];
+const TABS: [&str; 4] = ["Status", "Devices", "Invitations", "Code"];
+const ACCENT: Color32 = Color32::from_rgb(59, 130, 246);
+const WARN: Color32 = Color32::from_rgb(230, 160, 40);
+const QUIET: Color32 = Color32::from_gray(140);
+
+/// One trusted device, ready to draw as a table row.
+#[derive(Clone)]
+struct DeviceRow {
+    id: String,
+    alias: Option<String>,
+    addr: Option<String>,
+    expires_at: u64,
+    live: bool,
+}
 
 #[derive(Default, Clone)]
 struct View {
     status: Vec<(String, String)>,
-    devices: Vec<String>,
+    devices: Vec<DeviceRow>,
     invites: Vec<InviteView>,
-    code: Vec<String>,
+    code: String,
+    password: bool,
+    consumed: bool,
     note: String,
 }
 
@@ -31,43 +46,43 @@ enum Cmd {
 }
 
 async fn snapshot(st: &Arc<State>) -> View {
+    let trusted = st.trust.lock().await.devices.len();
+    let pending = st.invites.lock().await.len();
     let mut v = View {
         status: vec![
             ("device".into(), st.id.id.clone()),
-            ("version".into(), format!("{} (proto v{})", dtu_core::VERSION, proto::PROTO)),
-            ("port".into(), st.cfg.port.to_string()),
-            ("api".into(), format!("127.0.0.1:{}", dtu_core::api::api_port(st))),
+            (
+                "version".into(),
+                format!("{} (proto v{})", dtu_core::VERSION, proto::PROTO),
+            ),
+            ("listen".into(), format!("0.0.0.0:{}", st.cfg.port)),
             ("root".into(), guard::for_display(&st.root)),
-            ("unlimit".into(), st.cfg.unlimit.to_string()),
-            ("trusted".into(), st.trust.lock().await.devices.len().to_string()),
-            ("pending".into(), st.invites.lock().await.len().to_string()),
-            ("uptime".into(), format!("{}s", identity::now().saturating_sub(st.started))),
+            ("unlimited".into(), st.cfg.unlimit.to_string()),
+            ("trusted".into(), trusted.to_string()),
+            ("pending".into(), pending.to_string()),
+            (
+                "uptime".into(),
+                format!("{}s", identity::now().saturating_sub(st.started)),
+            ),
         ],
         ..Default::default()
     };
 
     let store: Store = st.trust.lock().await.clone();
     for (id, d) in &store.devices {
-        let expires = if d.expires_at == 0 {
-            "never".to_string()
-        } else {
-            dtu_core::audit::iso(d.expires_at)
-        };
-        let live = if store.get(id).is_some() { "" } else { " (expired)" };
-        v.devices.push(format!(
-            "{id}  {}  {}  expires {expires}{live}",
-            d.alias.as_deref().unwrap_or("-"),
-            d.addr.clone().unwrap_or_else(|| "-".into())
-        ));
+        v.devices.push(DeviceRow {
+            id: id.clone(),
+            alias: d.alias.clone(),
+            addr: d.addr.clone(),
+            expires_at: d.expires_at,
+            live: store.get(id).is_some(),
+        });
     }
-
     v.invites = invite::list(st).await;
     let c = st.code.lock().await;
-    v.code = vec![
-        format!("code  {}", c.code),
-        format!("password  {}", if c.password.is_some() { "required" } else { "not set" }),
-        format!("state  {}", if c.consumed { "consumed (refresh to reuse)" } else { "fresh" }),
-    ];
+    v.code = c.code.clone();
+    v.password = c.password.is_some();
+    v.consumed = c.consumed;
     v
 }
 
