@@ -524,10 +524,19 @@ fn main() -> eframe::Result<()> {
     let view = Arc::new(Mutex::new(View::default()));
     let tx = spawn_worker(daemon.state.clone(), view.clone());
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([880.0, 600.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([960.0, 620.0])
+            .with_min_inner_size([680.0, 460.0]),
         ..Default::default()
     };
-    let app = App { state: daemon.state.clone(), view, tx, tab: 0, alias: String::new() };
+    let app = App {
+        state: daemon.state.clone(),
+        view,
+        tx,
+        tab: 0,
+        selected: None,
+        alias: String::new(),
+    };
     let out = eframe::run_native("dtu", options, Box::new(move |_cc| Ok(Box::new(app))));
     // Closing the window stops the services this process was hosting.
     daemon.stop();
