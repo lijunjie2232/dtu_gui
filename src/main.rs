@@ -1,6 +1,8 @@
 //! dtu desktop client: a native window (egui). It *is* the app: the core listener,
 //! discovery and REST surface start with it and stop when it exits.
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -10,8 +12,13 @@ use dtu_core::state::{Decision, State};
 use dtu_core::trust::Store;
 use dtu_core::{cfg, discover, embed, guard, identity, invite};
 use eframe::egui::{self, Align, Color32, Grid, Layout, RichText, ScrollArea, TextEdit};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-const TABS: [&str; 4] = ["Status", "Devices", "Invitations", "Code"];
+const TABS: [&str; 6] = ["Status", "Devices", "Invitations", "Code", "Log", "Settings"];
+/// What the log tab shows; `None` is everything.
+const FILTERS: [(&str, Option<&str>); 4] =
+    [("All", None), ("Auth", Some("auth")), ("Files", Some("file")), ("Invites", Some("invite"))];
 const ACCENT: Color32 = Color32::from_rgb(59, 130, 246);
 const WARN: Color32 = Color32::from_rgb(230, 160, 40);
 const QUIET: Color32 = Color32::from_gray(140);
@@ -159,13 +166,132 @@ struct App {
     /// Device row picked on the Devices tab; its alias is edited next to the table.
     selected: Option<String>,
     alias: String,
+    /// Index into `FILTERS`, used by the Log tab.
+    filter: usize,
+    /// Settings being edited, keyed by config key (initialised from `view.settings`).
+    edits: HashMap<String, String>,
+    settings_loaded: bool,
+    /// Repaint interval, from `ui_refresh_secs` at startup.
+    refresh: Duration,
+    /// Kept alive for the life of the app; dropping it removes the icon.
+    tray: Option<TrayIcon>,
+    /// What the tray asked for: 1 show, 2 show settings, 3 exit.
+    tray_cmd: Arc<AtomicU8>,
+    /// Set when the user really wants to quit (tray Exit), so close is not hijacked.
+    exiting: bool,
+    /// Window is parked in the tray: keep the frame loop breathing so a tray click
+    /// is picked up even if a hidden window gets no paint events.
+    hidden: bool,
+}
+
+/// Tray menu and left-click both land here: a small command byte plus a repaint.
+fn build_tray(ctx: &egui::Context, cmd: &Arc<AtomicU8>) -> Option<TrayIcon> {
+    let menu = Menu::new();
+    let show = MenuItem::new("Show dtu", true, None);
+    let settings = MenuItem::new("Settings", true, None);
+    let exit = MenuItem::new("Exit", true, None);
+    menu.append_items(&[&show, &settings, &PredefinedMenuItem::separator(), &exit])
+        .ok()?;
+    let (show_id, settings_id, exit_id) = (show.id().clone(), settings.id().clone(), exit.id().clone());
+
+    let menu_cmd = cmd.clone();
+    let menu_ctx = ctx.clone();
+    MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
+        let what = if e.id == show_id {
+            1
+        } else if e.id == settings_id {
+            2
+        } else if e.id == exit_id {
+            3
+        } else {
+            return;
+        };
+        menu_cmd.store(what, Ordering::SeqCst);
+        menu_ctx.request_repaint();
+    }));
+
+    let click_cmd = cmd.clone();
+    let click_ctx = ctx.clone();
+    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = e
+        {
+            click_cmd.store(1, Ordering::SeqCst);
+            click_ctx.request_repaint();
+        }
+    }));
+
+    TrayIconBuilder::new()
+        .with_tooltip("dtu")
+        .with_icon(tray_image())
+        .with_menu(Box::new(menu))
+        .build()
+        .ok()
+}
+
+/// 32x32 RGBA drawn in code: a blue tile with a white border and diagonal, so the
+/// binary needs no icon asset.
+fn tray_image() -> tray_icon::Icon {
+    const N: u32 = 32;
+    let mut rgba = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let border = x < 2 || y < 2 || x >= N - 2 || y >= N - 2;
+            let diagonal = (x as i32 - y as i32).abs() < 6;
+            rgba.extend_from_slice(if border || diagonal {
+                &[255, 255, 255, 255]
+            } else {
+                &[59, 130, 246, 255]
+            });
+        }
+    }
+    tray_icon::Icon::from_rgba(rgba, N, N).expect("32x32 rgba icon")
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_secs(1));
+        ctx.request_repaint_after(self.refresh);
         let view = self.view.lock().expect("view lock").clone();
         let api = dtu_core::api::api_port(&self.state);
+
+        // Tray: show the window, open Settings, or really quit.
+        match self.tray_cmd.swap(0, Ordering::SeqCst) {
+            1 => {
+                self.hidden = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            2 => {
+                self.hidden = false;
+                self.tab = 5;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+            3 => {
+                self.exiting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            _ => {}
+        }
+        if self.hidden {
+            ctx.request_repaint_after(Duration::from_millis(400));
+        }
+
+        // Closing the window means "hide to the tray" unless the user asked for a real exit.
+        let close_to_tray = view
+            .settings
+            .iter()
+            .find(|(k, _)| k == "ui_close_to_tray")
+            .map(|(_, v)| v == "true")
+            .unwrap_or(true);
+        if !self.exiting && ctx.input(|i| i.viewport().close_requested()) && close_to_tray && self.tray.is_some() {
+            self.hidden = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
 
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
             ui.add_space(6.0);
@@ -227,7 +353,9 @@ impl eframe::App for App {
                     0 => self.status_tab(ui, &view, api),
                     1 => self.devices_tab(ui, &view),
                     2 => self.invites_tab(ui, &view),
-                    _ => self.code_tab(ui, &view),
+                    3 => self.code_tab(ui, &view),
+                    4 => self.log_tab(ui, &view),
+                    _ => self.settings_tab(ui, &view),
                 });
         });
     }
