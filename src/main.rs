@@ -41,6 +41,10 @@ struct View {
     code: String,
     password: bool,
     consumed: bool,
+    /// Audit log: who authenticated, and which files moved.
+    logs: Vec<dtu_core::audit::Entry>,
+    /// Every setting as (key, current value), straight from config.json.
+    settings: Vec<(String, String)>,
     note: String,
 }
 
@@ -90,6 +94,13 @@ async fn snapshot(st: &Arc<State>) -> View {
     v.code = c.code.clone();
     v.password = c.password.is_some();
     v.consumed = c.consumed;
+    drop(c);
+    v.logs = dtu_core::audit::entries(None, log_lines);
+    let cfg = dtu_core::cfg::Config::load();
+    v.settings = dtu_core::cfg::fields()
+        .iter()
+        .map(|f| (f.key.to_string(), cfg.get(f.key).unwrap_or_default()))
+        .collect();
     v
 }
 
@@ -146,7 +157,7 @@ fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>) -> Sender<Cmd> {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
             };
             let note = rt.block_on(act(&st, cmd));
-            let mut fresh = rt.block_on(snapshot(&st));
+            let mut fresh = rt.block_on(snapshot(&st, log_lines));
             match note {
                 Ok(msg) if !msg.is_empty() => fresh.note = msg,
                 Ok(_) => {}
@@ -650,7 +661,10 @@ fn main() -> eframe::Result<()> {
     }
 
     let view = Arc::new(Mutex::new(View::default()));
-    let tx = spawn_worker(daemon.state.clone(), view.clone());
+    let startup = daemon.state.cfg.clone();
+    let repaint = Duration::from_secs(if startup.ui_refresh_secs > 0 { startup.ui_refresh_secs } else { 1 });
+    let log_lines = if startup.ui_log_lines > 0 { startup.ui_log_lines } else { 500 };
+    let tx = spawn_worker(daemon.state.clone(), view.clone(), log_lines);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
