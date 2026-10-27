@@ -12,3 +12,4 @@ path = "src/main.rs"
 dtu_core = { path = "../dtu_core" }
 tokio = { version = "1", features = ["rt", "macros", "time", "sync"] }
 eframe = "0.29"
+tray-icon = "0.26"
