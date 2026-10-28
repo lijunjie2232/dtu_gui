@@ -17,14 +17,10 @@ jobs:
     name: test (windows)
     runs-on: windows-latest
     steps:
-      # This repo and the core it links live side by side, like they do locally.
+      # dtu_core is pulled from its git tag (see Cargo.toml); no sibling checkout.
       - uses: actions/checkout@v4
         with:
           path: dtu_gui
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dtu_core
-          path: dtu_core
       - name: Build
         working-directory: dtu_gui
         run: cargo build --release
