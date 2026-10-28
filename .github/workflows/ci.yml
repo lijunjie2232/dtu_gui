@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The GUI is a Windows desktop app (egui + a tray icon); Linux would need a GTK
+  # and X11 dev stack on the runner, which this project does not ship for yet.
+  test:
+    name: test (windows)
+    runs-on: windows-latest
+    steps:
+      # This repo and the core it links live side by side, like they do locally.
+      - uses: actions/checkout@v4
+        with:
+          path: dtu_gui
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dtu_core
+          path: dtu_core
+      - name: Build
+        working-directory: dtu_gui
+        run: cargo build --release
+      - name: Clippy
+        working-directory: dtu_gui
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        working-directory: dtu_gui
+        run: cargo test
