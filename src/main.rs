@@ -54,9 +54,10 @@ enum Cmd {
     NewCode,
     Accept(String),
     Deny(String),
+    SetConfig { key: String, value: String },
 }
 
-async fn snapshot(st: &Arc<State>) -> View {
+async fn snapshot(st: &Arc<State>, log_lines: usize) -> View {
     let trusted = st.trust.lock().await.devices.len();
     let pending = st.invites.lock().await.len();
     let mut v = View {
@@ -133,11 +134,24 @@ async fn act(st: &Arc<State>, cmd: Cmd) -> Result<String, String> {
             invite::decide(st, &id, Decision::Deny).await?;
             Ok(format!("denied invite {id}"))
         }
+        Cmd::SetConfig { key, value } => {
+            let mut cfg = dtu_core::cfg::Config::load();
+            cfg.set(&key, &value)?;
+            cfg.save().map_err(|e| format!("save config: {e}"))?;
+            if dtu_core::cfg::applies_live(&key) {
+                st.apply_live(&cfg).await;
+            }
+            Ok(if dtu_core::cfg::applies_live(&key) {
+                format!("{key} = {value}")
+            } else {
+                format!("{key} = {value} (applies on the next start)")
+            })
+        }
     }
 }
 
 /// Own thread, republishing a fresh `View` every second: the window never awaits.
-fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>) -> Sender<Cmd> {
+fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>, log_lines: usize) -> Sender<Cmd> {
     let (tx, rx) = channel::<Cmd>();
     std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
