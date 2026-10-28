@@ -27,6 +27,8 @@ a permanent status bar at the bottom (short device id · listening port · API p
 | Devices | table of trusted devices; select a row to rename or forget it in the toolbar |
 | Invitations | one card per invitation with `accept 30d` / `deny` |
 | Code | the pairing code in large type with `new code` / `copy`, password and consumed state |
+| Log | who authenticated and which files moved (peer, address, path, size), filtered by All / Auth / Files / Invites |
+| Settings | every key of config.json (ports, root, parallel, trust, UI refresh…) — `live` rows apply at once, `next start` rows on the next boot |
 
 ## Typical flow
 
@@ -37,6 +39,12 @@ a permanent status bar at the bottom (short device id · listening port · API p
 5. From then on `dtu push nas ./file` works
 
 Receiving stays active for as long as the window is open.
+
+## Tray
+
+Closing the window does not quit: the app **stays in the tray and keeps receiving** by default.
+Left-click the icon to show the window, right-click for the **Show dtu / Settings / Exit** menu.
+`ui_close_to_tray` in the Settings tab switches the close behaviour (false = quit on close).
 
 ## Notes
 
