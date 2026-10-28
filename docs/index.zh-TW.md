@@ -14,7 +14,7 @@ cargo build --release
 
 ```
 ┌ dtu ────────────────────────────────────────────────────────────┐
-│  Status  Devices  Invitations  Code            Scan LAN  Refresh │
+│  Status  Devices  Invitations  Code  Log  Settings      Scan LAN  Refresh │
 ├─────────────────────────────────────────────────────────────────┤
 │ 本機資訊                    │ 給第三方的 REST                     │
 │ device  0tZr635ykNqC3…     │ 127.0.0.1:47001        [copy key]   │
@@ -59,6 +59,45 @@ cargo build --release
 大字等寬的一次性配對碼。**new code** 重新產生，**copy** 複製到剪貼簿。
 `used by one transfer` 表示已被使用，`a password is required` 表示另外設了密碼。
 
+### Log
+
+每筆事件一行：連線認證，以及真正搬動過的檔案 — 時間 / 事件 / 結果 / 對端（短 ID · IP:port） / 詳細（路徑、大小、操作）。
+上方選單可切換 **All / Auth / Files / Invites**。
+
+這個畫面回答「誰搬動了什麼」，不是檔案瀏覽或管理。
+
+### Settings
+
+`config.json` 的每個鍵都是一個表單列：`key / 值 / 生效時機 / 說明`。按 **save** 寫入（點一下就存），**Reload** 從檔案重讀。
+`live`（`code_password`）存檔後立即套用到運行中的監聽端；`next start`（埠、根目錄、逾時、UI 更新間隔…）要等下次啟動。
+
+| 鍵 | 預設 | 說明 |
+| --- | --- | --- |
+| `port` / `api_port` | 47000 / 0 | 監聽埠與 REST 的 loopback 埠 |
+| `root` | `<資料目錄>/share` | 對外分享的目錄 |
+| `parallel` | 4 | 每個檔案的 TCP 條數 |
+| `unlimit` / `unlimit_store_trust` | false | 危險：接受任何裝置 |
+| `code_one_shot` / `code_rotate_on_connect` | true / false | 配對碼用完即棄 / 每次連線輪替 |
+| `code_password` | 無 | 配對碼的額外密碼（清空即解除） |
+| `invite_timeout` / `session_ttl` / `idle_timeout` | 600 / 600 / 600 | 邀請、工作階段、無通訊秒數 |
+| `max_conn_per_ip` / `drain_timeout` | 32 / 5 | 單一位址連線上限與停止緩衝 |
+| `ui_refresh_secs` / `ui_log_lines` | 0 / 0 | UI 更新間隔與日誌行數（0 = 客戶端預設） |
+| `ui_close_to_tray` | true | 關閉視窗時縮到系統匣（false = 直接結束） |
+
+## 系統匣
+
+關掉視窗不會結束程式：預設**留在系統匣繼續收檔**，監聽、區網探索與 REST 都照常運行。
+
+| 操作 | 行為 |
+| --- | --- |
+| 左鍵點匣圖示 | 顯示主視窗 |
+| 右鍵點匣圖示 | 選單：**Show dtu** / **Settings**（直接開設定分頁）/ **Exit**（結束程式） |
+| 視窗的 × | `ui_close_to_tray` 為 true 就縮到匣，為 false 就結束 |
+
+- 選 **Exit** 會連同核心一起停掉。
+- 沒有匣的環境（部分 Linux）會退回「關閉即結束」。
+- 想「關掉就結束」，把設定分頁的 `ui_close_to_tray` 改成 false（立即生效）。
+
 ## 使用流程
 
 1. 兩台機器都啟動 `dtu-gui`
@@ -83,3 +122,4 @@ cargo build --release
 pip install -r requirements-docs.txt
 mkdocs serve
 ```
+

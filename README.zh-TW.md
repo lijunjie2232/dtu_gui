@@ -27,6 +27,8 @@ cargo build --release
 | Devices | 已信任裝置表格；選一列後可在下方工具列改別名或取消信任 |
 | Invitations | 每筆邀請一張卡片，附 `accept 30d` / `deny` |
 | Code | 大字配對碼與 `new code` / `copy`，並顯示是否需要密碼、是否已用 |
+| Log | 誰通過認證、以及真正搬動過的檔案（對端、位址、路徑、大小），可用 All / Auth / Files / Invites 篩選 |
+| Settings | config.json 的全部鍵（埠、根目錄、平行、信任、UI 更新間隔…）；`live` 立即生效，`next start` 下次啟動 |
 
 ## 使用流程
 
@@ -37,6 +39,12 @@ cargo build --release
 5. 之後 `dtu push nas ./file` 就能用
 
 視窗開著期間，收檔的監聽一直有效。
+
+## 系統匣
+
+關掉視窗不會結束程式：預設**留在系統匣繼續收檔**。
+左鍵點圖示可顯示視窗，右鍵有 **Show dtu / Settings / Exit** 選單。
+關閉行為可在設定分頁的 `ui_close_to_tray` 切換（false = 關掉就結束）。
 
 ## 注意
 
