@@ -31,10 +31,6 @@ jobs:
         with:
           fetch-depth: 0
           path: dtu_gui
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dtu_core
-          path: dtu_core
       - id: bump
         working-directory: dtu_gui
         run: |
@@ -69,10 +65,6 @@ jobs:
         with:
           ref: ${{ needs.bump.outputs.tag }}
           path: dtu_gui
-      - uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/dtu_core
-          path: dtu_core
       - name: Build
         working-directory: dtu_gui
         run: cargo build --release
