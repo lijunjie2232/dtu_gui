@@ -14,7 +14,7 @@ cargo build --release
 
 ```
 ┌ dtu ────────────────────────────────────────────────────────────┐
-│  Status  Devices  Invitations  Code            Scan LAN  Refresh │
+│  Status  Devices  Invitations  Code  Log  Settings      Scan LAN  Refresh │
 ├─────────────────────────────────────────────────────────────────┤
 │ この端末の情報             │ 第三者向け REST                      │
 │ device  0tZr635ykNqC3…     │ 127.0.0.1:47001        [copy key]   │
@@ -59,6 +59,47 @@ cargo build --release
 大きな等幅フォントのワンタイムコード。**new code** で再生成、**copy** でクリップボードへ。
 `used by one transfer` は使用済み、`a password is required` は追加パスワードが必要という意味です。
 
+### Log
+
+接続の認証と、実際に動いたファイルを 1 行ずつ表示します。左から時刻 / イベント / 結果 / 相手（短縮 ID・IP:port） / 詳細（パス・サイズ・操作）。
+上部のセレクタで **All / Auth / Files / Invites** に絞り込めます。
+
+この画面は「誰が何を動かしたか」を見るためのもので、転送済みファイルの一覧や管理はしません（それは OS のファイルマネージャの仕事です）。
+
+### Settings
+
+`config.json` の全項目をフォームで編集します。1 行は `key / 値 / 反映時期 / 説明`。
+**save** で保存（クリックでも保存）、**Reload** でファイルから読み直し。
+`live` の行（`code_password`）は保存と同時に動いているリスナーへ反映、`next start` の行（ポート・ルート・タイムアウト類・UI 更新間隔など）は次回起動からです。
+
+| キー | 既定 | 内容 |
+| --- | --- | --- |
+| `port` / `api_port` | 47000 / 0 | 待ち受けポートと REST の loopback ポート |
+| `root` | `<データディレクトリ>/share` | 相手に見せるディレクトリ |
+| `parallel` | 4 | 1 ファイルあたりの TCP 本数 |
+| `unlimit` / `unlimit_store_trust` | false | 危険：全接続を受け入れる |
+| `code_one_shot` / `code_rotate_on_connect` | true / false | コードの使い切り・毎回ローテーション |
+| `code_password` | （なし） | コードに追加するパスワード（空で解除） |
+| `invite_timeout` / `session_ttl` / `idle_timeout` | 600 / 600 / 600 | 招待・セッション・無通信の時間（秒） |
+| `max_conn_per_ip` / `drain_timeout` | 32 / 5 | 接続上限と停止時の猶予 |
+| `ui_refresh_secs` / `ui_log_lines` | 0 / 0 | UI の更新間隔と呼び出すログ行数（0 = クライアント既定） |
+| `ui_close_to_tray` | true | ウィンドウを閉じたときトレイに残す（false で完全終了） |
+
+## トレイ
+
+ウィンドウを閉じてもアプリは終了せず、**トレイに残って受信を続けます**（既定）。
+コアのリスナー・探索・REST もそのまま動き続けます。
+
+| 操作 | 動作 |
+| --- | --- |
+| トレイを左クリック | メインウィンドウを表示 |
+| トレイを右クリック | メニュー：**Show dtu** / **Settings**（設定タブを開く） / **Exit**（アプリ終了） |
+| ウィンドウの× | `ui_close_to_tray` が true ならトレイに隠す、false なら終了 |
+
+- **Exit** を選ぶとコアも止まり、プロセスが終了します。
+- トレイアイコンが使えない環境（一部の Linux など）では、閉じる＝終了にフォールバックします。
+- 「閉じたら終了したい」場合は設定タブの `ui_close_to_tray` を false にしてください（即時反映）。
+
 ## 使い方
 
 1. 両方の端末で `dtu-gui` を起動
@@ -83,3 +124,4 @@ MkDocs（Material + static-i18n）で生成し、`main` への push で GitHub P
 pip install -r requirements-docs.txt
 mkdocs serve
 ```
+

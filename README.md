@@ -27,6 +27,8 @@ cargo build --release
 | Devices | 信頼済みデバイスの表。行を選ぶと下のツールバーで別名の変更／信頼の取り消し |
 | Invitations | 招待ごとのカード。`accept 30d` / `deny` |
 | Code | 大きなペアリングコードと `new code` / `copy`、パスワードや使用済みの表示 |
+| Log | 認証と、実際に動いたファイル（相手 ID・IP・パス・サイズ）。All / Auth / Files / Invites で絞り込み |
+| Settings | config.json の全項目（ポート、ルート、並列、信頼まわり、UI 更新間隔…）を編集。`live` は即時、`next start` は次回起動 |
 
 ## 使い方
 
@@ -37,6 +39,12 @@ cargo build --release
 5. 以降は `dtu push nas ./file` で送れる
 
 送る／受け取るの待ち受けはウィンドウが開いている間ずっと有効です。
+
+## トレイ
+
+ウィンドウを閉じてもアプリは終了せず、**トレイに残って受信を続けます**（既定）。
+トレイアイコンを左クリックでウィンドウを表示、右クリックで **Show dtu / Settings / Exit** のメニュー。
+閉じたときの振る舞いは設定タブの `ui_close_to_tray` で切り替えられます（false で「閉じたら終了」）。
 
 ## 注意
 
