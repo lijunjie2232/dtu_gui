@@ -971,7 +971,8 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dtu_core"
-version = "0.1.0"
+version = "0.1.2"
+source = "git+https://github.com/lijunjie2232/dtu_core.git?tag=v0.1.2#0f9840d6a8848a20221566c2e6b759ca1ce32622"
 dependencies = [
  "base64",
  "ed25519-dalek",
