@@ -674,8 +674,7 @@ impl App {
             });
     }
 
-    /// Every setting with the same editor the other clients use. `live` rows take
-    /// effect at once, `next start` rows are read once when the app boots.
+    /// Every setting; changes are saved immediately and restart the core when needed.
     fn settings_tab(&mut self, ui: &mut egui::Ui, view: &View) {
         if !self.settings_loaded && !view.settings.is_empty() {
             // "null" is how an unset optional looks in JSON; show it as an empty box
@@ -697,12 +696,33 @@ impl App {
         });
         ui.add_space(6.0);
 
+        // Value column width follows the longest value (clamped), so every row
+        // shares one width instead of each TextEdit sizing itself.
+        let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let mut value_width = 0.0_f32;
+        for f in dtu_core::cfg::fields() {
+            if f.kind == cfg::Kind::Bool {
+                continue;
+            }
+            let v = self
+                .edits
+                .get(f.key)
+                .cloned()
+                .or_else(|| view.settings.iter().find(|(k, _)| k == f.key).map(|(_, v)| if v == "null" { String::new() } else { v.clone() }))
+                .unwrap_or_default();
+            let w = ui.fonts(|fonts| fonts.layout_no_wrap(v, font_id.clone(), egui::Color32::WHITE).size().x);
+            value_width = value_width.max(w);
+        }
+        let header_w = ui.fonts(|fonts| fonts.layout_no_wrap("value".to_string(), font_id.clone(), egui::Color32::WHITE).size().x);
+        value_width = (value_width.max(header_w) + 16.0).clamp(320.0, 640.0);
+
         Grid::new("settings")
-            .num_columns(5)
+            .num_columns(3)
             .striped(true)
+            .max_col_width(1000.0)
             .spacing([14.0, 6.0])
             .show(ui, |ui| {
-                for h in ["key", "value", "save", "when", "help"] {
+                for h in ["key", "value", "help"] {
                     ui.label(RichText::new(h).color(QUIET).strong());
                 }
                 ui.end_row();
@@ -713,31 +733,34 @@ impl App {
                         .entry(f.key.to_string())
                         .or_insert_with(|| view.settings.iter().find(|(k, _)| k == f.key).map(|(_, v)| v.clone()).unwrap_or_default());
                     ui.monospace(f.key);
-                    let save = match f.kind {
+                    let changed = match f.kind {
                         cfg::Kind::Bool => {
                             let mut on = value.trim() == "true";
-                            let changed = ui.checkbox(&mut on, "").changed();
-                            if changed {
+                            let c = ui.checkbox(&mut on, "").changed();
+                            if c {
                                 *value = on.to_string();
+                                if f.restart {
+                                    self.restart_pending.store(true, Ordering::SeqCst);
+                                }
                             }
-                            changed || ui.button("save").clicked()
+                            c
                         }
                         _ => {
-                            ui.add(TextEdit::singleline(value).desired_width(240.0));
-                            ui.button("save").clicked()
+                            let resp = ui.add(TextEdit::singleline(value).desired_width(value_width));
+                            let c = resp.changed();
+                            if c && f.restart {
+                                self.restart_needed = true;
+                                self.last_restart_change = Some(std::time::Instant::now());
+                            }
+                            c
                         }
                     };
-                    if save {
+                    if changed {
                         let _ = self.tx.send(Cmd::SetConfig {
                             key: f.key.to_string(),
                             value: value.clone(),
                         });
                     }
-                    ui.label(if f.restart {
-                        RichText::new("next start").color(WARN).small()
-                    } else {
-                        RichText::new("live").color(Color32::from_rgb(64, 160, 96)).small()
-                    });
                     ui.label(RichText::new(f.help).color(QUIET).small());
                     ui.end_row();
                 }
