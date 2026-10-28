@@ -1,0 +1,108 @@
+# build → tag → publish, driven by the commit message on main.
+#
+#   feat: …            → minor bump
+#   anything else      → patch bump
+#   BREAKING CHANGE/!: → major bump
+#
+# The bump commit carries [skip ci] so this workflow does not retrigger itself.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: bump version
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          path: dtu_gui
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dtu_core
+          path: dtu_core
+      - id: bump
+        working-directory: dtu_gui
+        run: |
+          set -euo pipefail
+          ver=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"(.*)".*/\1/')
+          IFS=. read -r major minor patch <<< "$ver"
+          msg=$(git log -1 --pretty=%B)
+          if grep -qE 'BREAKING CHANGE|^[a-z]+(\(.+\))?!:' <<< "$msg"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -qE '^feat(\(.+\))?:' <<< "$msg"; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          new="$major.$minor.$patch"
+          echo "bumping $ver -> $new"
+          sed -i -E "0,/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/s//version = \"$new\"/" Cargo.toml
+          cargo metadata --format-version 1 > /dev/null
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$new [skip ci]"
+          git tag "v$new"
+          git push origin "HEAD:${GITHUB_REF_NAME}" --tags
+          echo "tag=v$new" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (windows)
+    needs: bump
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+          path: dtu_gui
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/dtu_core
+          path: dtu_core
+      - name: Build
+        working-directory: dtu_gui
+        run: cargo build --release
+      - name: Collect the binary
+        shell: bash
+        working-directory: dtu_gui
+        run: |
+          mkdir -p dist
+          cp target/release/dtu-gui.exe dist/dtu-gui-windows.exe
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dtu-gui-windows
+          path: dtu_gui/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: [bump, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.tag }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.bump.outputs.tag }}
+        run: gh release create "$TAG" dist/* --generate-notes --title "dtu_gui $TAG"
