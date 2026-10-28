@@ -610,6 +610,164 @@ impl App {
         );
     }
 
+    /// Who authenticated, and which files they moved. Filtering happens client-side
+    /// so the one background fetch serves every view.
+    fn log_tab(&mut self, ui: &mut egui::Ui, view: &View) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Audit log").strong().size(15.0));
+            ui.add_space(8.0);
+            egui::ComboBox::from_id_salt("log-filter")
+                .selected_text(FILTERS[self.filter.min(FILTERS.len() - 1)].0)
+                .show_ui(ui, |ui| {
+                    for (i, (name, _)) in FILTERS.iter().enumerate() {
+                        ui.selectable_value(&mut self.filter, i, *name);
+                    }
+                });
+            ui.label(
+                RichText::new("auth decisions and every file that moved, with the peer and its address")
+                    .color(QUIET)
+                    .small(),
+            );
+        });
+        ui.add_space(6.0);
+
+        let keep = FILTERS[self.filter.min(FILTERS.len() - 1)].1;
+        let rows: Vec<&dtu_core::audit::Entry> = view
+            .logs
+            .iter()
+            .filter(|e| keep.is_none_or(|k| e.event == k))
+            .collect();
+        if rows.is_empty() {
+            ui.label(RichText::new("nothing logged yet").color(QUIET));
+            return;
+        }
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                Grid::new("log")
+                    .num_columns(5)
+                    .striped(true)
+                    .spacing([14.0, 5.0])
+                    .show(ui, |ui| {
+                        for h in ["time", "event", "result", "peer", "detail"] {
+                            ui.label(RichText::new(h).color(QUIET).strong());
+                        }
+                        ui.end_row();
+                        for e in rows {
+                            let time = e
+                                .ts
+                                .split('T')
+                                .nth(1)
+                                .unwrap_or(&e.ts)
+                                .trim_end_matches('Z');
+                            ui.monospace(time);
+                            ui.label(match e.event.as_str() {
+                                "file" => RichText::new("file").color(ACCENT),
+                                "auth" => RichText::new("auth"),
+                                "invite" => RichText::new("invite").color(WARN),
+                                other => RichText::new(other).color(QUIET),
+                            });
+                            ui.label(match e.result.as_str() {
+                                "ok" => RichText::new("ok").color(Color32::from_rgb(64, 160, 96)),
+                                "deny" | "error" => RichText::new(e.result.as_str()).color(WARN),
+                                other => RichText::new(other).color(QUIET),
+                            });
+                            let who = e.device.as_deref().unwrap_or("-");
+                            ui.label(RichText::new(format!("{} · {}", short_id(who), e.addr)).monospace().small());
+
+                            let mut detail = String::new();
+                            if let Some(p) = &e.path {
+                                detail.push_str(p);
+                            }
+                            if let Some(b) = e.bytes {
+                                if b > 0 {
+                                    detail.push_str(&format!("  {}", dtu_core::audit::human_bytes(b)));
+                                }
+                            }
+                            if !detail.is_empty() {
+                                detail.push(' ');
+                            }
+                            detail.push_str(&e.method);
+                            if let Some(r) = &e.reason {
+                                detail.push_str(&format!(" — {r}"));
+                            }
+                            ui.label(RichText::new(detail).small());
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+
+    /// Every setting with the same editor the other clients use. `live` rows take
+    /// effect at once, `next start` rows are read once when the app boots.
+    fn settings_tab(&mut self, ui: &mut egui::Ui, view: &View) {
+        if !self.settings_loaded && !view.settings.is_empty() {
+            // "null" is how an unset optional looks in JSON; show it as an empty box
+            self.edits = view
+                .settings
+                .iter()
+                .map(|(k, v)| (k.clone(), if v == "null" { String::new() } else { v.clone() }))
+                .collect();
+            self.settings_loaded = true;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Settings").strong().size(15.0));
+            ui.add_space(8.0);
+            if ui.button("Reload").clicked() {
+                self.settings_loaded = false;
+            }
+            ui.label(RichText::new("saved to config.json").color(QUIET).small());
+        });
+        ui.add_space(6.0);
+
+        Grid::new("settings")
+            .num_columns(5)
+            .striped(true)
+            .spacing([14.0, 6.0])
+            .show(ui, |ui| {
+                for h in ["key", "value", "save", "when", "help"] {
+                    ui.label(RichText::new(h).color(QUIET).strong());
+                }
+                ui.end_row();
+
+                for f in dtu_core::cfg::fields() {
+                    let value = self
+                        .edits
+                        .entry(f.key.to_string())
+                        .or_insert_with(|| view.settings.iter().find(|(k, _)| k == f.key).map(|(_, v)| v.clone()).unwrap_or_default());
+                    ui.monospace(f.key);
+                    let save = match f.kind {
+                        cfg::Kind::Bool => {
+                            let mut on = value.trim() == "true";
+                            let changed = ui.checkbox(&mut on, "").changed();
+                            if changed {
+                                *value = on.to_string();
+                            }
+                            changed || ui.button("save").clicked()
+                        }
+                        _ => {
+                            ui.add(TextEdit::singleline(value).desired_width(240.0));
+                            ui.button("save").clicked()
+                        }
+                    };
+                    if save {
+                        let _ = self.tx.send(Cmd::SetConfig {
+                            key: f.key.to_string(),
+                            value: value.clone(),
+                        });
+                    }
+                    ui.label(if f.restart {
+                        RichText::new("next start").color(WARN).small()
+                    } else {
+                        RichText::new("live").color(Color32::from_rgb(64, 160, 96)).small()
+                    });
+                    ui.label(RichText::new(f.help).color(QUIET).small());
+                    ui.end_row();
+                }
+            });
+    }
+
     /// Edits land in the live store, so the running listener sees them immediately.
     fn forget(&mut self, id: &str) {
         let st = self.state.clone();
@@ -692,8 +850,28 @@ fn main() -> eframe::Result<()> {
         tab: 0,
         selected: None,
         alias: String::new(),
+        filter: 0,
+        edits: HashMap::new(),
+        settings_loaded: false,
+        refresh: repaint,
+        tray: None,
+        tray_cmd: Arc::new(AtomicU8::new(0)),
+        exiting: false,
+        hidden: false,
     };
-    let out = eframe::run_native("dtu", options, Box::new(move |_cc| Ok(Box::new(app))));
+    let out = eframe::run_native(
+        "dtu",
+        options,
+        Box::new(move |cc| {
+            // The tray needs the egui context to wake the window on a click.
+            let mut app = app;
+            app.tray = build_tray(&cc.egui_ctx, &app.tray_cmd.clone());
+            if app.tray.is_none() {
+                eprintln!("dtu: no tray available; closing the window will quit");
+            }
+            Ok(Box::new(app))
+        }),
+    );
     // Closing the window stops the services this process was hosting.
     daemon.stop();
     out
