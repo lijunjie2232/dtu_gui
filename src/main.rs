@@ -141,19 +141,15 @@ async fn act(st: &Arc<State>, cmd: Cmd) -> Result<String, String> {
             if dtu_core::cfg::applies_live(&key) {
                 st.apply_live(&cfg).await;
             }
-            Ok(if dtu_core::cfg::applies_live(&key) {
-                format!("{key} = {value}")
-            } else {
-                format!("{key} = {value} (applies on the next start)")
-            })
+            Ok(format!("{key} = {value}"))
         }
     }
 }
 
 /// Own thread, republishing a fresh `View` every second: the window never awaits.
-fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>, log_lines: usize) -> Sender<Cmd> {
+fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>, log_lines: usize) -> (Sender<Cmd>, std::thread::JoinHandle<()>) {
     let (tx, rx) = channel::<Cmd>();
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -180,7 +176,7 @@ fn spawn_worker(st: Arc<State>, view: Arc<Mutex<View>>, log_lines: usize) -> Sen
             *view.lock().unwrap() = fresh;
         }
     });
-    tx
+    (tx, handle)
 }
 
 struct App {
@@ -200,6 +196,19 @@ struct App {
     refresh: Duration,
     /// Kept alive for the life of the app; dropping it removes the icon.
     tray: Option<TrayIcon>,
+    /// Tray menu item ids, for polling events.
+    tray_show_id: Option<tray_icon::menu::MenuId>,
+    tray_settings_id: Option<tray_icon::menu::MenuId>,
+    tray_exit_id: Option<tray_icon::menu::MenuId>,
+    /// Hosted core daemon, kept here so settings can restart it.
+    daemon: Option<embed::Daemon>,
+    /// Worker thread handle.
+    worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// Set by the worker when a restart-requiring setting changed.
+    restart_pending: Arc<AtomicBool>,
+    /// Debounced restart for text fields that need it.
+    restart_needed: bool,
+    last_restart_change: Option<std::time::Instant>,
     /// What the tray asked for: 1 show, 2 show settings, 3 exit.
     tray_cmd: Arc<AtomicU8>,
     /// Set when the user really wants to quit (tray Exit), so close is not hijacked.
@@ -254,13 +263,55 @@ fn tray_image() -> tray_icon::Icon {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.restart_needed {
+            if let Some(t) = self.last_restart_change {
+                if t.elapsed() >= Duration::from_secs(1) {
+                    self.restart_needed = false;
+                    self.last_restart_change = None;
+                    self.restart_pending.store(true, Ordering::SeqCst);
+                } else {
+                    ctx.request_repaint_after(Duration::from_millis(100));
+                }
+            }
+        }
+        if self.restart_pending.swap(false, Ordering::SeqCst) {
+            self.restart_core();
+        }
         ctx.request_repaint_after(self.refresh);
         let view = self.view.lock().expect("view lock").clone();
         let api = dtu_core::api::api_port(&self.state);
 
         // Tray: show the window, open Settings, or really quit.
+        // Poll tray events (menu + left click) since we no longer use global handlers.
+        if let Some(show_id) = &self.tray_show_id {
+            while let Ok(e) = tray_icon::menu::MenuEvent::receiver().try_recv() {
+                let what = if e.id == *show_id {
+                    1
+                } else if Some(&e.id) == self.tray_settings_id.as_ref() {
+                    2
+                } else if Some(&e.id) == self.tray_exit_id.as_ref() {
+                    3
+                } else {
+                    0
+                };
+                if what != 0 {
+                    self.tray_cmd.store(what, Ordering::SeqCst);
+                }
+            }
+        }
+        while let Ok(e) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = e
+            {
+                self.tray_cmd.store(1, Ordering::SeqCst);
+            }
+        }
         match self.tray_cmd.swap(0, Ordering::SeqCst) {
             1 => {
+                eprintln!("tray_cmd=1 show");
                 self.hidden = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -805,6 +856,48 @@ impl App {
             view.lock().unwrap().note = note;
         });
     }
+
+    fn restart_core(&mut self) {
+        // Stop the worker first.
+        let (dummy_tx, _dummy_rx) = channel::<Cmd>();
+        let old_tx = std::mem::replace(&mut self.tx, dummy_tx);
+        drop(old_tx);
+        if let Some(h) = self.worker_handle.take() {
+            let _ = h.join();
+        }
+        // Stop the current core.
+        if let Some(d) = self.daemon.take() {
+            d.stop();
+        }
+        // Host a fresh core with the updated config.
+        let daemon = match embed::host(cfg::Config::load()) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("dtu: restart failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = daemon.wait_ready() {
+            eprintln!("dtu: restart not ready: {e}");
+            daemon.stop();
+            return;
+        }
+        let view = Arc::new(Mutex::new(View::default()));
+        let startup = daemon.state.cfg.clone();
+        let repaint = Duration::from_secs(if startup.ui_refresh_secs > 0 { startup.ui_refresh_secs } else { 1 });
+        let log_lines = if startup.ui_log_lines > 0 { startup.ui_log_lines } else { 500 };
+        let (tx, handle) = spawn_worker(daemon.state.clone(), view.clone(), log_lines);
+        self.state = daemon.state.clone();
+        self.view = view;
+        self.tx = tx;
+        self.worker_handle = Some(handle);
+        self.daemon = Some(daemon);
+        self.edits.clear();
+        self.settings_loaded = false;
+        self.refresh = repaint;
+        self.restart_needed = false;
+        self.last_restart_change = None;
+    }
 }
 
 /// Device ids are long; the status bar only needs enough to tell them apart.
@@ -813,6 +906,20 @@ fn short_id(id: &str) -> String {
         id.to_string()
     } else {
         format!("{}…", &id[..12])
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let (dummy_tx, _dummy_rx) = channel::<Cmd>();
+        let old_tx = std::mem::replace(&mut self.tx, dummy_tx);
+        drop(old_tx);
+        if let Some(h) = self.worker_handle.take() {
+            let _ = h.join();
+        }
+        if let Some(d) = self.daemon.take() {
+            d.stop();
+        }
     }
 }
 
@@ -835,7 +942,8 @@ fn main() -> eframe::Result<()> {
     let startup = daemon.state.cfg.clone();
     let repaint = Duration::from_secs(if startup.ui_refresh_secs > 0 { startup.ui_refresh_secs } else { 1 });
     let log_lines = if startup.ui_log_lines > 0 { startup.ui_log_lines } else { 500 };
-    let tx = spawn_worker(daemon.state.clone(), view.clone(), log_lines);
+    let restart_pending = Arc::new(AtomicBool::new(false));
+    let (tx, worker_handle) = spawn_worker(daemon.state.clone(), view.clone(), log_lines);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
@@ -854,9 +962,17 @@ fn main() -> eframe::Result<()> {
         settings_loaded: false,
         refresh: repaint,
         tray: None,
+        tray_show_id: None,
+        tray_settings_id: None,
+        tray_exit_id: None,
         tray_cmd: Arc::new(AtomicU8::new(0)),
         exiting: false,
         hidden: false,
+        daemon: Some(daemon),
+        worker_handle: Some(worker_handle),
+        restart_pending,
+        restart_needed: false,
+        last_restart_change: None,
     };
     let out = eframe::run_native(
         "dtu",
