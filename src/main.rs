@@ -2,7 +2,7 @@
 //! discovery and REST surface start with it and stop when it exits.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -12,7 +12,7 @@ use dtu_core::state::{Decision, State};
 use dtu_core::trust::Store;
 use dtu_core::{cfg, discover, embed, guard, identity, invite};
 use eframe::egui::{self, Align, Color32, Grid, Layout, RichText, ScrollArea, TextEdit};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 const TABS: [&str; 6] = ["Status", "Devices", "Invitations", "Code", "Log", "Settings"];
@@ -210,51 +210,27 @@ struct App {
 }
 
 /// Tray menu and left-click both land here: a small command byte plus a repaint.
-fn build_tray(ctx: &egui::Context, cmd: &Arc<AtomicU8>) -> Option<TrayIcon> {
+fn build_tray(_ctx: &egui::Context, _cmd: &Arc<AtomicU8>) -> (Option<TrayIcon>, tray_icon::menu::MenuId, tray_icon::menu::MenuId, tray_icon::menu::MenuId) {
     let menu = Menu::new();
     let show = MenuItem::new("Show dtu", true, None);
     let settings = MenuItem::new("Settings", true, None);
     let exit = MenuItem::new("Exit", true, None);
-    menu.append_items(&[&show, &settings, &PredefinedMenuItem::separator(), &exit])
-        .ok()?;
+    if let Err(e) = menu.append_items(&[&show, &settings, &PredefinedMenuItem::separator(), &exit]) {
+        eprintln!("build_tray: append_items failed: {e}");
+        return (None, show.id().clone(), settings.id().clone(), exit.id().clone());
+    }
     let (show_id, settings_id, exit_id) = (show.id().clone(), settings.id().clone(), exit.id().clone());
+    eprintln!("ids: show={} settings={} exit={}", show_id.0, settings_id.0, exit_id.0);
 
-    let menu_cmd = cmd.clone();
-    let menu_ctx = ctx.clone();
-    MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-        let what = if e.id == show_id {
-            1
-        } else if e.id == settings_id {
-            2
-        } else if e.id == exit_id {
-            3
-        } else {
-            return;
-        };
-        menu_cmd.store(what, Ordering::SeqCst);
-        menu_ctx.request_repaint();
-    }));
-
-    let click_cmd = cmd.clone();
-    let click_ctx = ctx.clone();
-    TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-        if let TrayIconEvent::Click {
-            button: MouseButton::Left,
-            button_state: MouseButtonState::Up,
-            ..
-        } = e
-        {
-            click_cmd.store(1, Ordering::SeqCst);
-            click_ctx.request_repaint();
-        }
-    }));
-
-    TrayIconBuilder::new()
+    eprintln!("build_tray: building");
+    let t = TrayIconBuilder::new()
         .with_tooltip("dtu")
         .with_icon(tray_image())
         .with_menu(Box::new(menu))
-        .build()
-        .ok()
+        .with_menu_on_left_click(false)
+        .build();
+    eprintln!("build_tray: result is_some={}", t.is_ok());
+    (t.ok(), show_id, settings_id, exit_id)
 }
 
 /// 32x32 RGBA drawn in code: a blue tile with a white border and diagonal, so the
@@ -865,14 +841,16 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             // The tray needs the egui context to wake the window on a click.
             let mut app = app;
-            app.tray = build_tray(&cc.egui_ctx, &app.tray_cmd.clone());
+            let (tray, show_id, settings_id, exit_id) = build_tray(&cc.egui_ctx, &app.tray_cmd.clone());
+            app.tray = tray;
             if app.tray.is_none() {
                 eprintln!("dtu: no tray available; closing the window will quit");
             }
+            app.tray_show_id = Some(show_id);
+            app.tray_settings_id = Some(settings_id);
+            app.tray_exit_id = Some(exit_id);
             Ok(Box::new(app))
         }),
     );
-    // Closing the window stops the services this process was hosting.
-    daemon.stop();
     out
 }
