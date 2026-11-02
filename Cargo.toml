@@ -1,6 +1,6 @@
 [package]
 name = "dtu_gui"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "dtu desktop client: a native egui window over dtu_core"
 
